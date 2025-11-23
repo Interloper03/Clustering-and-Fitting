@@ -14,10 +14,127 @@ import numpy as np
 import pandas as pd
 import scipy.stats as ss
 import seaborn as sns
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import silhouette_score
 from scipy.optimize import curve_fit
+
+# Try to import required scikit-learn pieces. If not available, provide lightweight fallbacks.
+try:
+    from sklearn.cluster import KMeans  # noqa: F401
+    from sklearn.preprocessing import StandardScaler  # noqa: F401
+    from sklearn.metrics import silhouette_score  # noqa: F401
+except Exception:
+    # Lightweight StandardScaler fallback
+    class StandardScaler:
+        def __init__(self):
+            self.mean_ = None
+            self.scale_ = None
+
+        def fit(self, X):
+            X = np.asarray(X, dtype=float)
+            self.mean_ = X.mean(axis=0)
+            self.scale_ = X.std(axis=0, ddof=0)
+            # avoid division by zero
+            self.scale_[self.scale_ == 0] = 1.0
+            return self
+
+        def transform(self, X):
+            X = np.asarray(X, dtype=float)
+            return (X - self.mean_) / self.scale_
+
+        def fit_transform(self, X):
+            return self.fit(X).transform(X)
+
+        def inverse_transform(self, X_scaled):
+            Xs = np.asarray(X_scaled, dtype=float)
+            return Xs * self.scale_ + self.mean_
+
+    # Lightweight KMeans fallback
+    class KMeans:
+        def __init__(self, n_clusters=8, random_state=None, n_init=10, max_iter=300):
+            self.n_clusters = int(n_clusters)
+            self.random_state = random_state
+            self.n_init = max(1, int(n_init))
+            self.max_iter = int(max_iter)
+            self.cluster_centers_ = None
+            self.labels_ = None
+            self.inertia_ = None
+
+        def _init_centers(self, X, rng):
+            # choose k unique random samples as initial centers
+            idx = rng.choice(X.shape[0], size=self.n_clusters, replace=False)
+            return X[idx].astype(float, copy=True)
+
+        def fit(self, X):
+            X = np.asarray(X, dtype=float)
+            rng = np.random.RandomState(self.random_state)
+            best_inertia = np.inf
+            best_centers = None
+            best_labels = None
+
+            for _ in range(self.n_init):
+                centers = self._init_centers(X, rng)
+                for _iter in range(self.max_iter):
+                    # assign labels
+                    dists = np.linalg.norm(X[:, None, :] - centers[None, :, :], axis=2)
+                    labels = np.argmin(dists, axis=1)
+                    new_centers = np.array([X[labels == j].mean(axis=0) if np.any(labels == j) else centers[j]
+                                             for j in range(self.n_clusters)])
+                    if np.allclose(new_centers, centers):
+                        break
+                    centers = new_centers
+                # compute inertia
+                dists = np.linalg.norm(X - centers[labels], axis=1) ** 2
+                inertia = float(dists.sum())
+                if inertia < best_inertia:
+                    best_inertia = inertia
+                    best_centers = centers.copy()
+                    best_labels = labels.copy()
+
+            # store best solution
+            self.cluster_centers_ = best_centers
+            self.labels_ = best_labels
+            self.inertia_ = best_inertia
+            return self
+
+        def predict(self, X):
+            X = np.asarray(X, dtype=float)
+            dists = np.linalg.norm(X[:, None, :] - self.cluster_centers_[None, :, :], axis=2)
+            return np.argmin(dists, axis=1)
+
+    # Lightweight silhouette_score fallback
+    def silhouette_score(X, labels):
+        X = np.asarray(X, dtype=float)
+        labels = np.asarray(labels, dtype=int)
+        n_samples = X.shape[0]
+        unique_labels = np.unique(labels)
+        if unique_labels.size == 1:
+            return 0.0
+        # Precompute pairwise distances
+        dists = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
+        sil_samples = np.zeros(n_samples, dtype=float)
+        for i in range(n_samples):
+            own_label = labels[i]
+            mask_same = labels == own_label
+            mask_same[i] = False  # exclude self
+            a = 0.0
+            if np.any(mask_same):
+                a = dists[i, mask_same].mean()
+            else:
+                a = 0.0
+            b = np.inf
+            for other_label in unique_labels:
+                if other_label == own_label:
+                    continue
+                mask_other = labels == other_label
+                if not np.any(mask_other):
+                    continue
+                b = min(b, dists[i, mask_other].mean())
+            # compute silhouette for sample i
+            denom = max(a, b)
+            sil = 0.0
+            if denom > 0:
+                sil = (b - a) / denom
+            sil_samples[i] = sil
+        return float(np.mean(sil_samples))
 
 
 def plot_relational_plot(df):
@@ -93,25 +210,27 @@ def preprocessing(df):
     Returns:
         pd.DataFrame: Cleaned dataframe.
     """
+    # You should preprocess your data in this function and
+    # make use of quick features such as 'describe', 'head/tail' and 'corr'.
+    
     # Inspection (prints to console for user verification)
     print("--- Data Head ---")
     print(df.head())
     print("\n--- Data Description ---")
     print(df.describe())
     
-    # Drop rows with missing values and explicitly COPY to avoid SettingWithCopyWarning
-    df = df.dropna().copy()
+    # Drop rows with missing values
+    df = df.dropna()
     
     # Ensure numerical columns are floats (if read incorrectly)
     numeric_cols = ['danceability', 'energy', 'loudness', 'valence']
     for col in numeric_cols:
         if col in df.columns:
-            # Use .loc to ensure we modify the dataframe safely
-            df.loc[:, col] = pd.to_numeric(df[col], errors='coerce')
+            df[col] = pd.to_numeric(df[col], errors='coerce')
             
-    # Final cleanup (with another copy to be safe)
-    df = df.dropna().copy()
+    df = df.dropna() # Drop again if coercion created NaNs
     return df
+
 
 def writing(moments, col):
     """
