@@ -14,127 +14,11 @@ import numpy as np
 import pandas as pd
 import scipy.stats as ss
 import seaborn as sns
+import corner
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import silhouette_score
 from scipy.optimize import curve_fit
-
-# Try to import required scikit-learn pieces. If not available, provide lightweight fallbacks.
-try:
-    from sklearn.cluster import KMeans  # noqa: F401
-    from sklearn.preprocessing import StandardScaler  # noqa: F401
-    from sklearn.metrics import silhouette_score  # noqa: F401
-except Exception:
-    # Lightweight StandardScaler fallback
-    class StandardScaler:
-        def __init__(self):
-            self.mean_ = None
-            self.scale_ = None
-
-        def fit(self, X):
-            X = np.asarray(X, dtype=float)
-            self.mean_ = X.mean(axis=0)
-            self.scale_ = X.std(axis=0, ddof=0)
-            # avoid division by zero
-            self.scale_[self.scale_ == 0] = 1.0
-            return self
-
-        def transform(self, X):
-            X = np.asarray(X, dtype=float)
-            return (X - self.mean_) / self.scale_
-
-        def fit_transform(self, X):
-            return self.fit(X).transform(X)
-
-        def inverse_transform(self, X_scaled):
-            Xs = np.asarray(X_scaled, dtype=float)
-            return Xs * self.scale_ + self.mean_
-
-    # Lightweight KMeans fallback
-    class KMeans:
-        def __init__(self, n_clusters=8, random_state=None, n_init=10, max_iter=300):
-            self.n_clusters = int(n_clusters)
-            self.random_state = random_state
-            self.n_init = max(1, int(n_init))
-            self.max_iter = int(max_iter)
-            self.cluster_centers_ = None
-            self.labels_ = None
-            self.inertia_ = None
-
-        def _init_centers(self, X, rng):
-            # choose k unique random samples as initial centers
-            idx = rng.choice(X.shape[0], size=self.n_clusters, replace=False)
-            return X[idx].astype(float, copy=True)
-
-        def fit(self, X):
-            X = np.asarray(X, dtype=float)
-            rng = np.random.RandomState(self.random_state)
-            best_inertia = np.inf
-            best_centers = None
-            best_labels = None
-
-            for _ in range(self.n_init):
-                centers = self._init_centers(X, rng)
-                for _iter in range(self.max_iter):
-                    # assign labels
-                    dists = np.linalg.norm(X[:, None, :] - centers[None, :, :], axis=2)
-                    labels = np.argmin(dists, axis=1)
-                    new_centers = np.array([X[labels == j].mean(axis=0) if np.any(labels == j) else centers[j]
-                                             for j in range(self.n_clusters)])
-                    if np.allclose(new_centers, centers):
-                        break
-                    centers = new_centers
-                # compute inertia
-                dists = np.linalg.norm(X - centers[labels], axis=1) ** 2
-                inertia = float(dists.sum())
-                if inertia < best_inertia:
-                    best_inertia = inertia
-                    best_centers = centers.copy()
-                    best_labels = labels.copy()
-
-            # store best solution
-            self.cluster_centers_ = best_centers
-            self.labels_ = best_labels
-            self.inertia_ = best_inertia
-            return self
-
-        def predict(self, X):
-            X = np.asarray(X, dtype=float)
-            dists = np.linalg.norm(X[:, None, :] - self.cluster_centers_[None, :, :], axis=2)
-            return np.argmin(dists, axis=1)
-
-    # Lightweight silhouette_score fallback
-    def silhouette_score(X, labels):
-        X = np.asarray(X, dtype=float)
-        labels = np.asarray(labels, dtype=int)
-        n_samples = X.shape[0]
-        unique_labels = np.unique(labels)
-        if unique_labels.size == 1:
-            return 0.0
-        # Precompute pairwise distances
-        dists = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
-        sil_samples = np.zeros(n_samples, dtype=float)
-        for i in range(n_samples):
-            own_label = labels[i]
-            mask_same = labels == own_label
-            mask_same[i] = False  # exclude self
-            a = 0.0
-            if np.any(mask_same):
-                a = dists[i, mask_same].mean()
-            else:
-                a = 0.0
-            b = np.inf
-            for other_label in unique_labels:
-                if other_label == own_label:
-                    continue
-                mask_other = labels == other_label
-                if not np.any(mask_other):
-                    continue
-                b = min(b, dists[i, mask_other].mean())
-            # compute silhouette for sample i
-            denom = max(a, b)
-            sil = 0.0
-            if denom > 0:
-                sil = (b - a) / denom
-            sil_samples[i] = sil
-        return float(np.mean(sil_samples))
 
 
 def plot_relational_plot(df):
@@ -166,15 +50,21 @@ def plot_categorical_plot(df):
 
 def plot_statistical_plot(df):
     """
-    Creates a statistical plot (correlation heatmap) for numerical features.
+    Creates a statistical plot using the 'corner' library.
+    This generates a triangle plot showing distributions and scatter correlations.
     Saves the plot as 'statistical_plot.png'.
     """
-    fig, ax = plt.subplots(figsize=(8, 6))
-    # Select only numeric columns for correlation
-    numeric_df = df.select_dtypes(include=[np.number])
-    corr = numeric_df.corr()
-    sns.heatmap(corr, annot=False, cmap='coolwarm', ax=ax)
-    ax.set_title("Statistical Plot: Correlation Heatmap")
+    # Select specific numeric columns for the corner plot to avoid clutter
+    cols_to_plot = ['danceability', 'energy', 'loudness', 'valence']
+    
+    # Filter df to ensure only these exist and are numeric
+    plot_data = df[cols_to_plot].select_dtypes(include=[np.number]).dropna()
+    
+    # Create the corner plot
+    figure = corner.corner(plot_data, labels=plot_data.columns, 
+                           quantiles=[0.16, 0.5, 0.84], 
+                           show_titles=True, title_kwargs={"fontsize": 12})
+    
     plt.savefig('statistical_plot.png')
     return
 
@@ -193,7 +83,7 @@ def statistical_analysis(df, col: str):
     data_series = df[col]
     mean = data_series.mean()
     stddev = data_series.std()
-    skew = ss.skew(data_series, bias=False)  # bias=False for sample skewness
+    skew = ss.skew(data_series, bias=False)
     # Fisher's definition (normal = 0.0) used for excess kurtosis
     excess_kurtosis = ss.kurtosis(data_series, fisher=True, bias=False)
     
@@ -203,32 +93,25 @@ def statistical_analysis(df, col: str):
 def preprocessing(df):
     """
     Preprocesses the dataframe by dropping nulls and inspecting data.
-    
-    Args:
-        df (pd.DataFrame): Raw dataframe.
-        
-    Returns:
-        pd.DataFrame: Cleaned dataframe.
     """
-    # You should preprocess your data in this function and
-    # make use of quick features such as 'describe', 'head/tail' and 'corr'.
-    
     # Inspection (prints to console for user verification)
     print("--- Data Head ---")
     print(df.head())
     print("\n--- Data Description ---")
     print(df.describe())
     
-    # Drop rows with missing values
-    df = df.dropna()
+    # Drop rows with missing values and explicitly COPY to avoid SettingWithCopyWarning
+    df = df.dropna().copy()
     
     # Ensure numerical columns are floats (if read incorrectly)
     numeric_cols = ['danceability', 'energy', 'loudness', 'valence']
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Use .loc to ensure we modify the dataframe safely
+            df.loc[:, col] = pd.to_numeric(df[col], errors='coerce')
             
-    df = df.dropna() # Drop again if coercion created NaNs
+    # Final cleanup (with another copy to be safe)
+    df = df.dropna().copy()
     return df
 
 
@@ -296,7 +179,6 @@ def perform_clustering(df, col1, col2):
         """
         Calculates silhouette score and inertia for a chosen k (k=3).
         """
-        # Using k=3 based on typical Spotify genre clusters (Low/Mid/High energy)
         k_chosen = 3
         km = KMeans(n_clusters=k_chosen, random_state=42, n_init=10)
         km.fit(X_scaled)
@@ -305,7 +187,6 @@ def perform_clustering(df, col1, col2):
         return _score, _inertia
 
     # Find best number of clusters
-    # We run the plots and calculations as requested
     plot_elbow_method()
     score, inertia = one_silhouette_inertia()
     print(f"Silhouette Score for k=3: {score:.2f}")
@@ -326,7 +207,6 @@ def perform_clustering(df, col1, col2):
     
     cenlabels = [f'Cluster {i+1}' for i in range(k_final)]
     
-    # Return the original data (not scaled) for plotting, along with labels
     return labels, df[[col1, col2]].values, xkmeans, ykmeans, cenlabels
 
 
@@ -336,12 +216,8 @@ def plot_clustered_data(labels, data, xkmeans, ykmeans, centre_labels):
     Saves as 'clustering.png'.
     """
     fig, ax = plt.subplots()
-    # Scatter plot of the data points colored by cluster label
     scatter = ax.scatter(data[:, 0], data[:, 1], c=labels, cmap='viridis', alpha=0.6)
-    
-    # Plot the centers
     ax.scatter(xkmeans, ykmeans, c='red', s=200, marker='X', label='Centroids')
-    
     ax.set_title("K-Means Clustering (Energy vs Valence)")
     ax.set_xlabel("Energy")
     ax.set_ylabel("Valence")
@@ -352,7 +228,7 @@ def plot_clustered_data(labels, data, xkmeans, ykmeans, centre_labels):
 
 def perform_fitting(df, col1, col2):
     """
-    Performs curve fitting (Linear Regression in this case) on two columns.
+    Performs curve fitting (Linear Regression) on two columns.
     """
     # Gather data and prepare for fitting
     x_data = df[col1].values
@@ -364,11 +240,10 @@ def perform_fitting(df, col1, col2):
         
     popt, pcov = curve_fit(linear_model, x_data, y_data)
     
-    # Predict across x (generate a line for plotting)
+    # Predict across x
     x_range = np.linspace(min(x_data), max(x_data), 100)
     y_predicted = linear_model(x_range, *popt)
     
-    # Print equation for user reference
     print(f"Fitting Equation: y = {popt[0]:.2f}x + {popt[1]:.2f}")
 
     return df[[col1, col2]].values, x_range, y_predicted
@@ -380,12 +255,8 @@ def plot_fitted_data(data, x, y):
     Saves as 'fitting.png'.
     """
     fig, ax = plt.subplots()
-    # Plot raw data
     ax.scatter(data[:, 0], data[:, 1], label='Data', color='gray', alpha=0.5)
-    
-    # Plot fitted line
     ax.plot(x, y, label='Fitted Linear Model', color='red', linewidth=2)
-    
     ax.set_title("Curve Fitting: Loudness vs Energy")
     ax.set_xlabel("Loudness (dB)")
     ax.set_ylabel("Energy")
@@ -395,7 +266,6 @@ def plot_fitted_data(data, x, y):
 
 
 def main():
-    # Ensure your Spotify csv is named 'data.csv'
     try:
         df = pd.read_csv('data.csv')
     except FileNotFoundError:
@@ -404,7 +274,6 @@ def main():
 
     df = preprocessing(df)
     
-    # Column for statistical moments (Danceability is a good distribution)
     col = 'danceability'
     
     plot_relational_plot(df)
@@ -414,14 +283,10 @@ def main():
     moments = statistical_analysis(df, col)
     writing(moments, col)
     
-    # Clustering: Energy (physical intensity) vs Valence (musical positiveness)
-    # This groups songs into moods (e.g., Sad/Calm, Happy/Energetic, Aggressive)
     print("\n--- Performing Clustering ---")
     clustering_results = perform_clustering(df, 'energy', 'valence')
     plot_clustered_data(*clustering_results)
     
-    # Fitting: Loudness vs Energy
-    # These two are physically correlated (louder tracks usually have higher energy)
     print("\n--- Performing Fitting ---")
     fitting_results = perform_fitting(df, 'loudness', 'energy')
     plot_fitted_data(*fitting_results)
