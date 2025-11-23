@@ -93,27 +93,25 @@ def preprocessing(df):
     Returns:
         pd.DataFrame: Cleaned dataframe.
     """
-    # You should preprocess your data in this function and
-    # make use of quick features such as 'describe', 'head/tail' and 'corr'.
-    
     # Inspection (prints to console for user verification)
     print("--- Data Head ---")
     print(df.head())
     print("\n--- Data Description ---")
     print(df.describe())
     
-    # Drop rows with missing values
-    df = df.dropna()
+    # Drop rows with missing values and explicitly COPY to avoid SettingWithCopyWarning
+    df = df.dropna().copy()
     
     # Ensure numerical columns are floats (if read incorrectly)
     numeric_cols = ['danceability', 'energy', 'loudness', 'valence']
     for col in numeric_cols:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
+            # Use .loc to ensure we modify the dataframe safely
+            df.loc[:, col] = pd.to_numeric(df[col], errors='coerce')
             
-    df = df.dropna() # Drop again if coercion created NaNs
+    # Final cleanup (with another copy to be safe)
+    df = df.dropna().copy()
     return df
-
 
 def writing(moments, col):
     """
